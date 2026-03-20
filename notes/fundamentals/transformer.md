@@ -421,7 +421,9 @@ graph TB
 三个关键技术：
 1. **分块（Tiling）**：将 Q、K、V 切成小块，逐块加载到 SRAM 计算
 2. **在线 Softmax**：增量计算 Softmax，无需一次看到整行：
+
    $$m^{(\text{new})} = \max(m^{(\text{old})}, m^{(\text{block})}), \quad \ell^{(\text{new})} = e^{m^{(\text{old})} - m^{(\text{new})}} \ell^{(\text{old})} + e^{m^{(\text{block})} - m^{(\text{new})}} \ell^{(\text{block})}$$
+
 3. **反向传播时重算**：不存 $N \times N$ 中间矩阵，反向传播时从 Q、K、V 重新算（SRAM 重算比 HBM 读取更快）
 
 **Flash Attention 是精确的**——它不是近似算法，结果与标准注意力完全一致，只是计算顺序不同。

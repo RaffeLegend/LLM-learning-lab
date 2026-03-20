@@ -317,6 +317,7 @@ def apply_rotary_emb(xq, xk, freqs_cis):
 复数乘法 $(q_0 + iq_1) \cdot (\cos m\theta + i\sin m\theta)$ 展开后得到：
 
 $$\text{Real} = q_0 \cos m\theta - q_1 \sin m\theta$$
+
 $$\text{Imag} = q_0 \sin m\theta + q_1 \cos m\theta$$
 
 这恰好是 $2 \times 2$ 旋转矩阵作用于 $(q_0, q_1)$ 的结果。

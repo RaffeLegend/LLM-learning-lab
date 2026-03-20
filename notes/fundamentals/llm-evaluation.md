@@ -176,7 +176,7 @@ $$F1 = 2 \cdot \frac{\text{Precision} \cdot \text{Recall}}{\text{Precision} + \t
 |------|----------|------|------|:----------------:|----------|
 | **Chatbot Arena** | 众包盲评 pairwise | 真实用户 | 高（需大量投票） | **最高** | 收敛慢，用户群体偏差 |
 | **MT-Bench** | 80 题多轮对话 | GPT-4 打分 1-10 | 低 | 高 | 题目固定，易过拟合 |
-| **AlpacaEval 2.0** | 805 条指令 | GPT-4/Claude | 极低（<$10） | 0.98 (Spearman) | 依赖自动评委偏好 |
+| **AlpacaEval 2.0** | 805 条指令 | GPT-4/Claude | 极低（<\$10） | 0.98 (Spearman) | 依赖自动评委偏好 |
 
 #### Chatbot Arena 与 Elo Rating
 

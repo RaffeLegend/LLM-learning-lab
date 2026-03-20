@@ -754,7 +754,9 @@ graph TB
 2. **AdaLN-Zero（自适应层归一化零初始化）**：
    - 标准 Transformer 用 LayerNorm；DiT 用 **Adaptive LayerNorm**
    - 条件 embedding（时间步 $t$ + 类别 $y$）通过 MLP 生成 $(\gamma, \beta, \alpha)$ 参数：
+
      $$\text{AdaLN}(h, c) = \gamma(c) \odot \text{LayerNorm}(h) + \beta(c)$$
+
    - **零初始化**：$\alpha$ 参数初始化为零，使每个 DiT block 初始时等同于恒等映射
    - 这对训练稳定性至关重要
 
