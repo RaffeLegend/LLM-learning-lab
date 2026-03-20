@@ -1,6 +1,6 @@
-# 位置编码详解：从正弦编码到 RoPE 与 mRoPE
+# 位置编码详解：从正弦编码到 RoPE、mRoPE 与 Interleaved-MRoPE
 
-> 位置编码是 Transformer 架构中最关键的"隐形组件"——没有它，Transformer 连"猫追狗"和"狗追猫"都分不清。本篇从基础出发，深入推导 RoPE 的数学原理，并延伸到多模态场景下的 mRoPE。
+> 位置编码是 Transformer 架构中最关键的"隐形组件"——没有它，Transformer 连"猫追狗"和"狗追猫"都分不清。本篇从基础出发，深入推导 RoPE 的数学原理，延伸到多模态场景下的 mRoPE，并探讨其交错改进版 Interleaved-MRoPE。
 
 ## 关键概念
 
@@ -11,6 +11,7 @@
 | Relative PE（相对位置编码） | 编码 token 之间的相对距离而非绝对位置（T5 bias、ALiBi、RoPE） |
 | RoPE（Rotary Position Embedding） | 通过复数空间旋转编码位置，使注意力得分天然只依赖相对位置 |
 | mRoPE（Multi-dimensional RoPE） | 将 RoPE 维度分组，分别编码时间/高度/宽度，适配多模态输入 |
+| Interleaved-MRoPE | mRoPE 的改进版本，通过交错（round-robin）分配维度对到各位置轴，使每轴都获得多尺度频率覆盖 |
 | Position Interpolation（PI） | 通过位置缩放将长序列压缩到训练长度范围内，实现上下文扩展 |
 | NTK-aware Scaling | 替换 RoPE 基础频率实现非均匀频率缩放，无需微调 |
 | YaRN | 结合 NTK-by-parts 插值和注意力温度缩放的 SOTA 长上下文方法 |
@@ -627,7 +628,230 @@ $$t = h = w = \text{text\_position}$$
 4. **向后兼容**：对纯文本输入，$t = h = w$ 使 mRoPE 退化为标准 RoPE，不影响文本理解能力
 5. **长视频支持**：时间轴的位置外推能力使模型可以处理超出训练长度的长视频序列
 
-### 八、ALiBi（简要对比）
+### 八、Interleaved-MRoPE（交错多维旋转位置编码）
+
+#### 8.1 mRoPE 的频率分配问题
+
+回顾 mRoPE 的维度分组方式——将 $d/2$ 个维度对**连续分成三组**：
+
+```
+标准 mRoPE 维度分配（d=12 为例，6 个维度对）：
+├── 组 1 (Temporal): 维度对 0, 1     → 频率 θ₀, θ₁ (最高频)
+├── 组 2 (Height):   维度对 2, 3     → 频率 θ₂, θ₃ (中频)
+└── 组 3 (Width):    维度对 4, 5     → 频率 θ₄, θ₅ (最低频)
+```
+
+由于 RoPE 的频率设计 $\theta_i = 10000^{-2i/d}$ 是**几何递减**的，这种连续分组导致一个重要问题：
+
+- **Temporal 组**始终分配到最高频率 → 只能精确编码短距离时间关系
+- **Width 组**始终分配到最低频率 → 精确度最差但能编码长距离
+
+**不同轴获得的频率范围完全不重叠**，这在某些场景下是不理想的——每个空间/时间轴都需要多尺度的频率来同时捕捉局部和全局的位置关系。
+
+#### 8.2 Interleaved-MRoPE 的核心思想
+
+Interleaved-MRoPE 的解决方案非常直觉：**交错分配维度对**，而非连续分组。
+
+```
+Interleaved-MRoPE 维度分配（d=12 为例，6 个维度对）：
+├── 维度对 0 → Temporal  (θ₀, 最高频)
+├── 维度对 1 → Height    (θ₁)
+├── 维度对 2 → Width     (θ₂)
+├── 维度对 3 → Temporal  (θ₃)
+├── 维度对 4 → Height    (θ₄)
+└── 维度对 5 → Width     (θ₅, 最低频)
+```
+
+即采用 **round-robin（轮询）** 方式分配维度对到各个位置轴：
+
+$$\text{axis}(j) = j \mod D$$
+
+其中 $D$ 是位置轴的数量（对于视频输入，$D = 3$）。
+
+**直觉比喻**：标准 mRoPE 像是给三个乐器组（弦乐、管乐、打击乐）各分配一段连续的音域——弦乐只能演奏高音，打击乐只能演奏低音。Interleaved-MRoPE 则让每个乐器组都能覆盖从高到低的完整音域，使每个"声部"都拥有丰富的表现力。
+
+#### 8.3 数学表述
+
+##### 标准 mRoPE（连续分组）
+
+$$\text{axis}(j) = \begin{cases} \text{Temporal} & \text{if } j < d/6 \\ \text{Height} & \text{if } d/6 \le j < 2d/6 \\ \text{Width} & \text{if } j \ge 2d/6 \end{cases}$$
+
+Temporal 组获得的频率集合为 $\{\theta_0, \theta_1, \ldots, \theta_{d/6-1}\}$（全部是高频），Width 组为 $\{\theta_{2d/6}, \ldots, \theta_{d/2-1}\}$（全部是低频）。
+
+##### Interleaved-MRoPE（交错分配）
+
+$$\text{axis}(j) = \begin{cases} \text{Temporal} & \text{if } j \mod 3 = 0 \\ \text{Height} & \text{if } j \mod 3 = 1 \\ \text{Width} & \text{if } j \mod 3 = 2 \end{cases}$$
+
+每个轴获得的频率集合为：
+- **Temporal**：$\{\theta_0, \theta_3, \theta_6, \ldots\}$ — 高频、中频、低频均匀分布
+- **Height**：$\{\theta_1, \theta_4, \theta_7, \ldots\}$ — 同样多尺度
+- **Width**：$\{\theta_2, \theta_5, \theta_8, \ldots\}$ — 同样多尺度
+
+旋转操作本身不变，只是维度对到位置轴的映射改变了：
+
+$$\text{Interleaved-mRoPE}(\mathbf{q}, t, h, w)_j = q_j' \cdot e^{i \cdot \text{pos}_{\text{axis}(j)} \cdot \theta_j}$$
+
+其中 $\text{pos}_{\text{axis}(j)}$ 根据交错规则选择 $t$、$h$ 或 $w$。
+
+#### 8.4 Interleaved vs 标准 mRoPE 对比
+
+```mermaid
+graph TB
+    subgraph Standard["标准 mRoPE：连续分组"]
+        direction LR
+        subgraph ST["Temporal"]
+            ST0["θ₀ (高频)"]
+            ST1["θ₁"]
+        end
+        subgraph SH["Height"]
+            SH0["θ₂ (中频)"]
+            SH1["θ₃"]
+        end
+        subgraph SW["Width"]
+            SW0["θ₄ (低频)"]
+            SW1["θ₅"]
+        end
+    end
+
+    subgraph Interleaved["Interleaved-MRoPE：交错分配"]
+        direction LR
+        subgraph IT["Temporal"]
+            IT0["θ₀ (高频)"]
+            IT1["θ₃ (低频)"]
+        end
+        subgraph IH["Height"]
+            IH0["θ₁ (高频)"]
+            IH1["θ₄ (低频)"]
+        end
+        subgraph IW["Width"]
+            IW0["θ₂ (中频)"]
+            IW1["θ₅ (低频)"]
+        end
+    end
+
+    style Standard fill:#fce4ec
+    style Interleaved fill:#e8f5e9
+    style ST fill:#e3f2fd
+    style SH fill:#fff3e0
+    style SW fill:#f3e5f5
+    style IT fill:#e3f2fd
+    style IH fill:#fff3e0
+    style IW fill:#f3e5f5
+```
+
+| 对比维度 | 标准 mRoPE（连续分组） | Interleaved-MRoPE（交错分配） |
+|---------|:---:|:---:|
+| 频率分配 | 每轴获得一段连续频率 | 每轴获得均匀间隔的频率 |
+| 多尺度能力 | 不同轴的尺度范围不同 | **每轴都覆盖完整的频率范围** |
+| 局部+全局编码 | Temporal 只有局部，Width 只有全局 | 每轴同时具备局部和全局编码 |
+| 实现改动 | 基准实现 | 仅改变维度索引映射 |
+| 向后兼容 | ✅（$t=h=w$ 退化为 RoPE） | ✅（同样退化为 RoPE） |
+
+#### 8.5 为什么交错分配更好
+
+**理由一：多尺度位置感知**
+
+每个位置轴都需要同时编码近距离和远距离的位置关系。例如，图像的高度轴：
+- 需要**高频**来区分相邻行（局部纹理）
+- 需要**低频**来感知全局构图（上方是天空、下方是地面）
+
+标准 mRoPE 中，如果 Height 被分配到中频段，它既无法精确编码相邻行，也无法很好地感知全局空间关系。交错分配确保每轴都有"高频看近处 + 低频看远处"的完整能力。
+
+**理由二：频率利用的均衡性**
+
+标准分组中，Temporal 轴获得的频率全部集中在高频端。对于长视频（时间跨度大），这些高频分量会快速振荡并相互抵消，导致模型难以区分时间上相隔较远的帧。交错分配为 Temporal 轴分配了低频分量，使其能编码长距离时间依赖。
+
+**理由三：对称性**
+
+交错分配使三个轴在频率分配上完全对称——没有哪个轴被"偏爱"或"忽视"。这在先验未知哪个轴更重要时是更好的默认选择。
+
+#### 8.6 实现要点
+
+Interleaved-MRoPE 的实现改动非常小——只需修改维度到位置轴的映射，旋转操作本身完全不变：
+
+```python
+def build_position_ids_interleaved(dim, positions_t, positions_h, positions_w):
+    """
+    构建 Interleaved-MRoPE 的位置索引
+
+    Args:
+        dim: 每个注意力头的维度 d
+        positions_t: 时间轴位置索引 [seq_len]
+        positions_h: 高度轴位置索引 [seq_len]
+        positions_w: 宽度轴位置索引 [seq_len]
+
+    Returns:
+        position_ids: [seq_len, dim//2] 每个维度对的位置索引
+    """
+    num_pairs = dim // 2
+    position_ids = torch.zeros(len(positions_t), num_pairs)
+
+    for j in range(num_pairs):
+        axis = j % 3  # 交错分配：0→T, 1→H, 2→W, 3→T, ...
+        if axis == 0:
+            position_ids[:, j] = positions_t
+        elif axis == 1:
+            position_ids[:, j] = positions_h
+        else:
+            position_ids[:, j] = positions_w
+
+    return position_ids
+
+# 对比：标准 mRoPE 的连续分组
+def build_position_ids_contiguous(dim, positions_t, positions_h, positions_w):
+    """标准 mRoPE：连续分组"""
+    num_pairs = dim // 2
+    group_size = num_pairs // 3
+    position_ids = torch.zeros(len(positions_t), num_pairs)
+
+    position_ids[:, :group_size] = positions_t.unsqueeze(1)           # 前 1/3 → Temporal
+    position_ids[:, group_size:2*group_size] = positions_h.unsqueeze(1)  # 中 1/3 → Height
+    position_ids[:, 2*group_size:] = positions_w.unsqueeze(1)         # 后 1/3 → Width
+
+    return position_ids
+```
+
+旋转操作保持不变——只需将 `position_ids` 与对应的 $\theta_j$ 相乘得到旋转角度：
+
+```python
+def apply_mrope(q, k, position_ids, theta_base=10000.0):
+    """
+    通用的 mRoPE/Interleaved-mRoPE 应用函数
+    position_ids 的构建方式决定了是标准还是交错版本
+    """
+    dim = q.shape[-1]
+    num_pairs = dim // 2
+
+    # 计算频率
+    freqs = 1.0 / (theta_base ** (torch.arange(0, dim, 2).float() / dim))
+
+    # 计算旋转角度：position_ids[seq, pair] * freqs[pair]
+    angles = position_ids * freqs.unsqueeze(0)  # [seq_len, num_pairs]
+
+    cos_vals = torch.cos(angles)
+    sin_vals = torch.sin(angles)
+
+    # 应用旋转（与标准 RoPE 相同）
+    q_embed = q * cos_vals.repeat_interleave(2, dim=-1) + \
+              rotate_half(q) * sin_vals.repeat_interleave(2, dim=-1)
+    k_embed = k * cos_vals.repeat_interleave(2, dim=-1) + \
+              rotate_half(k) * sin_vals.repeat_interleave(2, dim=-1)
+
+    return q_embed, k_embed
+```
+
+#### 8.7 应用场景
+
+Interleaved-MRoPE 特别适合以下场景：
+
+| 场景 | 原因 |
+|------|------|
+| 长视频理解 | Temporal 轴需要低频分量编码远距离帧关系 |
+| 高分辨率图像 | Height/Width 轴需要高频分量编码精细空间位置 |
+| 动态分辨率输入 | 各轴的位置范围可能差异很大，多尺度频率提供更好的适应性 |
+| 3D 点云处理 | X/Y/Z 三轴对频率的需求相似，交错分配更公平 |
+
+### 九、ALiBi（简要对比）
 
 ALiBi（Attention with Linear Biases, Press et al., 2021）提出了一种完全不同的位置编码策略——**不在 embedding 上添加位置编码**，而是直接在注意力得分上加线性距离惩罚。
 
@@ -740,10 +964,11 @@ RoPE 长上下文扩展方法的演进展示了一个清晰的技术进步脉络
 | "ALiBi 比 RoPE 更好" | ALiBi 在外推方面有优势，但 RoPE 在实际性能和多模态扩展性上更胜一筹，已成为事实标准 |
 | "mRoPE 只是 2D RoPE" | mRoPE 是 3D 位置编码（时间/高度/宽度），且对纯文本向后兼容退化为 1D RoPE |
 | "NTK-aware 就是 YaRN" | NTK-aware 只做频率缩放；YaRN 在此基础上增加了分组插值策略和注意力温度校正 |
+| "mRoPE 的维度分组方式无所谓" | 连续分组导致不同轴获得不同频率范围，Interleaved-MRoPE 通过交错分配让每轴都覆盖完整频率谱，获得更均衡的多尺度位置编码 |
 
 ### 面试/口述版
 
-> 位置编码解决 Transformer 的核心问题——置换不变性，让模型能区分 token 顺序。早期方法分为正弦编码（固定函数加到输入上）和可学习编码（BERT/GPT-2 的嵌入矩阵），但都是绝对位置编码，长度泛化能力差。RoPE 是现代 LLM 的标准选择，它的核心数学洞察是：在复数空间中将 Q 和 K 按位置做旋转，两个旋转后向量的内积只取决于旋转角度差——即相对位置 $(m-n)$。具体实现是将 $d$ 维向量的维度两两配对，每对使用不同频率 $\theta_i = 10000^{-2i/d}$ 做 2D 旋转，形成分块对角旋转矩阵。RoPE 的长上下文扩展从 PI（均匀位置压缩）发展到 NTK-aware（非均匀频率缩放）再到 YaRN（分组插值 + 温度校正），LLaMA-3 通过提高基础频率到 500000 配合类 YaRN 方法支持 128K 上下文。在多模态领域，Qwen2-VL 提出的 mRoPE 将维度分为三组分别编码时间/高度/宽度，使位置编码能尊重图像的二维空间结构和视频的三维时空结构，同时对纯文本完全向后兼容。
+> 位置编码解决 Transformer 的核心问题——置换不变性，让模型能区分 token 顺序。早期方法分为正弦编码（固定函数加到输入上）和可学习编码（BERT/GPT-2 的嵌入矩阵），但都是绝对位置编码，长度泛化能力差。RoPE 是现代 LLM 的标准选择，它的核心数学洞察是：在复数空间中将 Q 和 K 按位置做旋转，两个旋转后向量的内积只取决于旋转角度差——即相对位置 $(m-n)$。具体实现是将 $d$ 维向量的维度两两配对，每对使用不同频率 $\theta_i = 10000^{-2i/d}$ 做 2D 旋转，形成分块对角旋转矩阵。RoPE 的长上下文扩展从 PI（均匀位置压缩）发展到 NTK-aware（非均匀频率缩放）再到 YaRN（分组插值 + 温度校正），LLaMA-3 通过提高基础频率到 500000 配合类 YaRN 方法支持 128K 上下文。在多模态领域，Qwen2-VL 提出的 mRoPE 将维度分为三组分别编码时间/高度/宽度，使位置编码能尊重图像的二维空间结构和视频的三维时空结构，同时对纯文本完全向后兼容。其改进版 Interleaved-MRoPE 进一步将维度对以 round-robin 方式交错分配到各轴，解决了标准 mRoPE 中不同轴频率范围不重叠的问题，使每个位置轴都获得从高频到低频的完整多尺度编码能力。
 
 ## 相关链接
 
@@ -761,4 +986,5 @@ RoPE 长上下文扩展方法的演进展示了一个清晰的技术进步脉络
 
 ## 更新日志
 
+- 2026-03-14: 新增第八章 Interleaved-MRoPE（交错多维旋转位置编码），更新关键概念表、常见误区、面试版
 - 2026-02-21: 初始创建
