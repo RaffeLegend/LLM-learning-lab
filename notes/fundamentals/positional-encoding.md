@@ -261,15 +261,15 @@ $$= \text{Re}\left[\sum_{j=0}^{d/2-1} q_j' \cdot \overline{k_j'} \cdot e^{i(m-n)
 
 **关键：不需要真正构造旋转矩阵！**
 
-##### 方法一：rotate_half 实现（HuggingFace 风格）
+##### 方法一：`rotate_half` 实现（HuggingFace 风格）
 
 定义 `rotate_half` 操作：将向量的前后两半交换并取反：
 
-$$\text{rotate\_half}(\mathbf{q}) = (-q_{d/2}, \ldots, -q_{d-1}, q_0, \ldots, q_{d/2-1})$$
+$$\text{rotate-half}(\mathbf{q}) = (-q_{d/2}, \ldots, -q_{d-1}, q_0, \ldots, q_{d/2-1})$$
 
 则 RoPE 可以表示为：
 
-$$\text{RoPE}(\mathbf{q}, m) = \mathbf{q} \odot \cos(m\boldsymbol{\theta}) + \text{rotate\_half}(\mathbf{q}) \odot \sin(m\boldsymbol{\theta})$$
+$$\text{RoPE}(\mathbf{q}, m) = \mathbf{q} \odot \cos(m\boldsymbol{\theta}) + \text{rotate-half}(\mathbf{q}) \odot \sin(m\boldsymbol{\theta})$$
 
 其中 $\odot$ 是逐元素乘法，$\boldsymbol{\theta} = (\theta_0, \theta_0, \theta_1, \theta_1, \ldots)$ 是频率向量（每个频率重复一次）。
 
@@ -576,7 +576,7 @@ $$\mathbf{q}_{(t_1,h_1,w_1)}^\top \mathbf{k}_{(t_2,h_2,w_2)} = \underbrace{\sum_
 
 **纯文本 token**：三个位置轴使用**相同的值**：
 
-$$t = h = w = \text{text\_position}$$
+$$t = h = w = \text{text-position}$$
 
 此时 mRoPE 完全等价于标准 1D RoPE——三组维度都使用同一个位置索引，相当于所有维度编码同一个位置。
 
